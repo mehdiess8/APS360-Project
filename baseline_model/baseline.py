@@ -48,25 +48,29 @@ class BaselineKNN:
         if img is None:
             raise ValueError(f"Could not read image at {img_path}")
         
-        # Resize to common dimensions
+        # Resize the imageto common dimensions
         img = cv2.resize(img, self.img_size)
         
         # Convert to grayscale if specified
         if self.use_grayscale:
-            if len(img.shape) == 3:  # Check if the image has color channels
+            if  len(img.shape) == 3:  # All our images are in color but its good to check if the image has color channels
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Flatten the image to a 1D vector
+        # Flatten the image to a 1D vector and normalize the pixel values to [0 , 1]
         img_flattened = img.flatten()
-        
-        # Normalize pixel values to [0, 1]
         img_normalized = img_flattened / 255.0
         
         return img_normalized
     
     def load_dataset(self, data_dir):
         """
-        Load and preprocess all images from the dataset directory.
+        Load and preprocess all images from the dataset directory with the new folder structure.
+        
+        New folder structure:
+        - Top level: images_folder/
+          - Screw size folders: M3/, M4/, M6/, etc.
+            - Head type folders: B/ (Button), S/ (Socket), F/ (Flat), etc.
+              - Image files named by length: M6_S_70_37.jpg, etc.
         
         Args:
             data_dir (str): Path to the dataset directory
@@ -77,29 +81,83 @@ class BaselineKNN:
         data_path = Path(data_dir)
         X = []
         y = []
+        labels = []
         
-        # Get all class folders
-        class_folders = [f for f in data_path.iterdir() if f.is_dir()]
-        self.classes = [folder.name for folder in class_folders]
+        # Ability to classify by size or head type or both commented out for now because not really needed
         
+        # Define what we want to classify by
+        # Options: 'size', 'head_type', or 'both'
+        #classification_type = 'both'  # Change this to determine classification target
+        
+        #print(f"Loading dataset from {data_dir} with classification by {classification_type}...")
+        
+        # Add this at the beginning of the load_dataset method
+        print(f"Looking for images in: {data_path}")
+        if not data_path.exists():
+            raise ValueError(f"Dataset directory does not exist: {data_path}")
+        
+        # Get all screw size folders
+        size_folders = [f for f in data_path.iterdir() if f.is_dir()]
+        
+        # Process each size folder
+        for size_folder in size_folders:
+            size_name = size_folder.name  # 'M3', 'M4', etc.
+            
+            # Get all head type folders within this size folder
+            head_type_folders = [f for f in size_folder.iterdir() if f.is_dir()]
+            
+            for head_type_folder in head_type_folders:
+                head_type = head_type_folder.name  #'B', 'S', 'F', etc.
+                
+                # Determine the label based on classification type
+                # if classification_type == 'size':
+                #     label = size_name
+                # elif classification_type == 'head_type':
+                #     label = head_type
+                # else:  # 'both'
+                label = f"{size_name}_{head_type}"
+                
+                # Quick check if this label is already in our list
+                if label not in labels:
+                    labels.append(label)
+                
+                label_idx = labels.index(label)
+                
+                # Get all image files in this folder
+                img_files = list(head_type_folder.glob('*.jpg')) + list(head_type_folder.glob('*.png')) + list(head_type_folder.glob('*.jpeg'))
+                
+                # If no files found directly, check if they're in subfolders or have specific naming patterns
+                if not img_files:
+                    # Try to find images with the pattern type: M6_S_70_37.png
+                    pattern = f"{size_name}_{head_type}_*.jpg"
+                    img_files += list(head_type_folder.glob(pattern))
+                    
+                    # Also check one level deeper in case images are in subfolders
+                    img_files += list(head_type_folder.glob('*/*.jpg'))
+              
+                print(f"Processing {len(img_files)} images for {label}")
+                
+                for img_path in img_files:
+                    try:
+                        # Load and preprocess the image
+                        img_vector = self.load_and_preprocess_image(img_path)
+                        X.append(img_vector)
+                        y.append(label_idx)
+                    except Exception as e:
+                        print(f"Error processing {img_path}: {e}")
+        
+        self.classes = labels
         print(f"Found {len(self.classes)} classes: {self.classes}")
         
-        # Process each class folder
-        for class_idx, class_folder in enumerate(class_folders):
-            class_name = class_folder.name
-            print(f"Processing class: {class_name}")
-            
-            # Get all image files in the class folder
-            img_files = list(class_folder.glob('*.jpg')) + list(class_folder.glob('*.png'))
-            
-            for img_path in img_files:
-                try:
-                    # Load and preprocess the image
-                    img_vector = self.load_and_preprocess_image(img_path)
-                    X.append(img_vector)
-                    y.append(class_idx)
-                except Exception as e:
-                    print(f"Error processing {img_path}: {e}")
+        # Quick sanity check if no images were found
+        if len(X) == 0:
+            print("WARNING: No images were found! Check the path and folder structure.")
+            print(f"Expected structure: {data_dir}/[size folder]/[head type folder]/[images]")
+            # Print some example paths that were checked
+            for size_folder in size_folders[:2]:
+                for head_type_folder in [f for f in size_folder.iterdir() if f.is_dir()][:2]:
+                    print(f"Checked: {head_type_folder}")
+                    print(f"Files in this directory: {list(head_type_folder.iterdir())[:5]}")
         
         return np.array(X), np.array(y)
     
@@ -127,7 +185,7 @@ class BaselineKNN:
     
     def evaluate(self, X_test, y_test):
         """
-        Evaluate the model on test data.
+        Evaluate the model on the test data.
         
         Args:
             X_test (np.array): Test feature vectors
@@ -139,14 +197,14 @@ class BaselineKNN:
         print("Evaluating model on test data...")
         X_test_scaled = self.scaler.transform(X_test)
         
-        # Measure prediction time
+        # Taking a measure of the prediction time
         start_time = time.time()
         y_pred = self.model.predict(X_test_scaled)
         prediction_time = time.time() - start_time
         
-        # Calculate metrics
+        # Calculate metrics for analysis
         accuracy = accuracy_score(y_test, y_pred)
-        report = classification_report(y_test, y_pred, target_names=self.classes)
+        report = classification_report(y_test, y_pred, target_names=self.classes, zero_division=0)
         conf_matrix = confusion_matrix(y_test, y_pred)
         
         print(f"Accuracy: {accuracy:.4f}")
@@ -182,7 +240,6 @@ class BaselineKNN:
         # Make prediction
         class_idx = self.model.predict(img_scaled)[0]
         class_name = self.classes[class_idx]
-        
         return class_idx, class_name
     
     def visualize_results(self, X_test, y_test, num_samples=5):
@@ -197,12 +254,12 @@ class BaselineKNN:
         X_test_scaled = self.scaler.transform(X_test)
         y_pred = self.model.predict(X_test_scaled)
         
-        # Select random samples
+        # Select random samples from the test set
         indices = np.random.choice(len(X_test), min(num_samples, len(X_test)), replace=False)
         
         plt.figure(figsize=(15, 3 * num_samples))
         for i, idx in enumerate(indices):
-            # Reshape the flattened image back to 2D
+            # Reshape the flattened image back to 2D to be able to display it
             if self.use_grayscale:
                 img = X_test[idx].reshape(self.img_size)
                 cmap = 'gray'
@@ -228,11 +285,11 @@ def main():
     Main function to run the baseline model.
     """
     # Set parameters
-    data_dir = "./images_folder" 
-    img_size = (64, 64)
-    use_grayscale = True
+    data_dir = "../images_folder" 
+    img_size = (256, 256)  # Tried smaller sizes but accuracy was very low, higher is better i think but would take forever to train and predict
+    use_grayscale = False  # We are not using grayscale because we are not classifying by color
     test_size = 0.15
-    k_values = [3, 5, 7]  # Try different k values
+    k_values = [3, 5, 7, 9]  # Try different k values
     
     # Create baseline model
     best_accuracy = 0
@@ -246,16 +303,19 @@ def main():
         baseline = BaselineKNN(n_neighbors=3, img_size=img_size, use_grayscale=use_grayscale)
         X, y = baseline.load_dataset(data_dir)
         
+        # Store class labels for later use
+        class_labels = baseline.classes.copy()
+        
         # Split into train and test sets
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y
-        )
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
         print(f"Dataset split: {X_train.shape[0]} training samples, {X_test.shape[0]} test samples")
         
         # Try different k values
         for k in k_values:
             print(f"\n--- Testing with k={k} ---")
             baseline = BaselineKNN(n_neighbors=k, img_size=img_size, use_grayscale=use_grayscale)
-            baseline.classes = baseline.classes  
+            baseline.classes = class_labels  
+            
             # Train and evaluate
             baseline.train(X_train, y_train)
             results = baseline.evaluate(X_test, y_test)
@@ -270,7 +330,7 @@ def main():
         
         # Visualize results with the best model
         baseline = BaselineKNN(n_neighbors=best_k, img_size=img_size, use_grayscale=use_grayscale)
-        baseline.classes = baseline.classes  
+        baseline.classes = class_labels  
         baseline.train(X_train, y_train)
         baseline.visualize_results(X_test, y_test)
         
@@ -288,11 +348,12 @@ def main():
             f.write(f"- Prediction time: {best_results['prediction_time']:.2f} seconds\n\n")
             f.write(f"Classification Report:\n")
             f.write(f"{best_results['classification_report']}\n")
-        
         print("Results saved to baseline_results.txt")
         
     except Exception as e:
+        import traceback
         print(f"Error: {e}")
+        print(traceback.format_exc())
 
 
 if __name__ == "__main__":
