@@ -12,8 +12,5 @@ The project is under development. Check back later for installation and usage in
 ## 🤝 Contributions
 This project is a team effort. More details on contributing will be shared soon.
 
-## 📬 Contact
-For inquiries, reach out via GitHub Issues.
-
 ---
 
